@@ -1,28 +1,36 @@
-
-import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
+import OpenAI from 'openai';
+import type { ChatCompletion } from 'openai/resources/chat';
 import type { AnalysisResult, ClauseTag } from '../types';
 
-if (!process.env.API_KEY) {
-    throw new Error("API_KEY environment variable is not set.");
+// WARNING: Storing API keys in client-side code is insecure and should not be done in production.
+// This is for demonstration purposes only, as per the user's request.
+const apiKey = "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";
+
+if (!apiKey) {
+    throw new Error("API_KEY is not set.");
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new OpenAI({
+    apiKey,
+    dangerouslyAllowBrowser: true, // This is required for client-side usage
+});
+
+const MODEL = 'gpt-5';
 
 /**
- * A wrapper for the ai.models.generateContent call that includes a retry mechanism
+ * A wrapper for the ai.chat.completions.create call that includes a retry mechanism
  * with exponential backoff to handle transient API errors.
  */
-async function generateContentWithRetry(
-    params: any,
+async function chatCompletionWithRetry(
+    params: OpenAI.Chat.ChatCompletionCreateParams,
     maxRetries = 3,
     initialDelay = 1000
-): Promise<GenerateContentResponse> {
+): Promise<ChatCompletion> {
     let lastError: Error | null = null;
     for (let i = 0; i < maxRetries; i++) {
         try {
-            const response = await ai.models.generateContent(params);
-            // Ensure the response is valid and has content before returning.
-            if (response && response.text) {
+            const response = await ai.chat.completions.create(params);
+            if (response && response.choices && response.choices.length > 0 && response.choices[0].message?.content) {
                  return response;
             }
             throw new Error("Received an empty or invalid response from the API.");
@@ -39,80 +47,80 @@ async function generateContentWithRetry(
 }
 
 
+// A JSON schema definition for the OpenAI prompt
 const clauseAnalysisSchema = {
-    type: Type.OBJECT,
+    type: "object",
     properties: {
         interpretation: {
-            type: Type.STRING,
+            type: "string",
             description: "A neutral, technical explanation of what the clause enables or controls. What does it do?"
         },
         exposure: {
-            type: Type.STRING,
+            type: "string",
             description: "An analysis of potential vulnerabilities, risks, or liabilities for the organization reviewing the contract. Where could this clause cause problems?"
         },
         opportunity: {
-            type: Type.STRING,
+            type: "string",
             description: "An analysis of potential leverage, negotiation hooks, or remedies available. How can this clause be used to our advantage or improved?"
         },
         clauseTag: {
-            type: Type.STRING,
+            type: "string",
             description: "Classify the clause using ONE of the following 10 tags: TEC, LEG, FIN, COM, IPX, TRM, DIS, DOC, EXE, EXT."
         },
         riskScore: {
-            type: Type.STRING,
+            type: "string",
             description: "Assign a risk score from one of the following 3 tiers: Critical, Material, Procedural."
         },
         riskCategories: {
-            type: Type.ARRAY,
+            type: "array",
             items: {
-                type: Type.STRING
+                type: "string"
             },
             description: "List all applicable risk categories from the following: Financial, Legal, Operational, Compliance, Reputational, Strategic."
         },
         negotiationRecommendation: {
-            type: Type.STRING,
+            type: "string",
             description: "Provide a concise, actionable recommendation for negotiation. E.g., 'Suggest adding a cap on liability' or 'Clarify the definition of Confidential Information'."
         },
         aiInvestigatoryQuestion: {
-            type: Type.STRING,
+            type: "string",
             description: "An insightful, probing question an analyst should ask to uncover hidden risks or clarify ambiguity. E.g., 'Does 'best efforts' have a measurable definition in this context?'"
         },
         suggestedRedline: {
-            type: Type.STRING,
+            type: "string",
             description: "If a textual change is recommended, provide the re-written clause as a 'redline' suggestion. This should be a direct, drop-in replacement for the original clause. If no change is needed, return an empty string."
         }
     },
     required: ["interpretation", "exposure", "opportunity", "clauseTag", "riskScore", "riskCategories", "negotiationRecommendation", "aiInvestigatoryQuestion", "suggestedRedline"]
 };
 
+const schemaAsString = JSON.stringify(clauseAnalysisSchema, null, 2);
 
 async function splitContractIntoClauses(contractText: string): Promise<string[]> {
     try {
-        const response = await generateContentWithRetry({
-            model: "gemini-2.5-flash",
-            contents: `Given the following legal contract, split it into individual clauses. A clause is typically a numbered or lettered paragraph. Return the result as a JSON array of strings, where each string is a complete clause. Do not include introductory text that is not part of a numbered clause.
+        const response = await chatCompletionWithRetry({
+            model: MODEL,
+            messages: [
+                {
+                    role: 'system',
+                    content: 'You are a helpful assistant designed to output JSON.'
+                },
+                {
+                    role: 'user',
+                    content: `Given the following legal contract, split it into individual clauses. A clause is typically a numbered or lettered paragraph. Return the result as a JSON object with a single key "clauses" which is an array of strings, where each string is a complete clause. Do not include introductory text that is not part of a numbered clause.
             
-            Contract:
-            ${contractText}`,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                        clauses: {
-                            type: Type.ARRAY,
-                            items: {
-                                type: Type.STRING,
-                                description: "A single clause from the contract."
-                            }
-                        }
-                    },
-                    required: ["clauses"]
+                    Contract:
+                    ${contractText}`
                 }
-            }
+            ],
+            response_format: { type: "json_object" },
         });
         
-        const jsonResponse = JSON.parse(response.text);
+        const content = response.choices[0].message.content;
+        if (!content) {
+            throw new Error("API returned no content.");
+        }
+        const jsonResponse = JSON.parse(content);
         if (jsonResponse && Array.isArray(jsonResponse.clauses)) {
             return jsonResponse.clauses;
         }
@@ -126,19 +134,35 @@ async function splitContractIntoClauses(contractText: string): Promise<string[]>
 
 async function analyzeClause(clauseText: string): Promise<Omit<AnalysisResult, 'clause'>> {
     try {
-        const response = await generateContentWithRetry({
-            model: "gemini-2.5-flash",
-            contents: `Analyze the following contract clause according to the NEEX Legal Contract Review Blueprint. Your response MUST be a single JSON object that conforms to the provided schema. Do not include any markdown formatting.
+        const response = await chatCompletionWithRetry({
+            model: MODEL,
+            messages: [
+                 {
+                    role: 'system',
+                    content: "You are a world-class legal AI assistant specializing in contract review. You must follow the NEEX Legal Contract Review Blueprint for Service & Deliverables Contracts. For the given contract clause, you must perform a comprehensive, clause-by-clause analysis based on three layers: Interpretation (what it does), Exposure (risks), and Opportunity (leverage). Crucially, you must also formulate an 'AI Investigatory Question' and, if necessary, provide a 'Suggested Redline' with improved text for the clause to enhance clarity and defensibility. Your response MUST be a single JSON object that conforms to the provided schema. Do not include any markdown formatting or explanatory text."
+                 },
+                 {
+                    role: 'user',
+                    content: `Analyze the following contract clause according to the NEEX Legal Contract Review Blueprint. Your response MUST be a single JSON object that conforms to the schema provided below.
+                    
+                    Schema:
+                    \`\`\`json
+                    ${schemaAsString}
+                    \`\`\`
 
-            Clause to Analyze: "${clauseText}"`,
-            config: {
-                systemInstruction: "You are a world-class legal AI assistant specializing in contract review. You must follow the NEEX Legal Contract Review Blueprint for Service & Deliverables Contracts. For the given contract clause, you must perform a comprehensive, clause-by-clause analysis based on three layers: Interpretation (what it does), Exposure (risks), and Opportunity (leverage). Crucially, you must also formulate an 'AI Investigatory Question' and, if necessary, provide a 'Suggested Redline' with improved text for the clause to enhance clarity and defensibility.",
-                responseMimeType: "application/json",
-                responseSchema: clauseAnalysisSchema,
-            }
+                    Clause to Analyze: "${clauseText}"`
+                 }
+            ],
+            response_format: { type: "json_object" },
         });
 
-        const jsonResponse = JSON.parse(response.text);
+        const content = response.choices[0].message.content;
+        if (!content) {
+            throw new Error("API returned no content.");
+        }
+
+        const jsonResponse = JSON.parse(content);
+        
         // Basic validation
         if (jsonResponse && jsonResponse.interpretation && jsonResponse.riskScore && jsonResponse.aiInvestigatoryQuestion && jsonResponse.suggestedRedline !== undefined) {
              return jsonResponse as Omit<AnalysisResult, 'clause'>;
@@ -174,10 +198,10 @@ export async function performFullAnalysis(
         });
         onProgress({ current: i + 1, total: totalClauses });
 
-        // Add a 1-second delay between clause analyses to avoid hitting API rate limits.
+        // Add a delay between clause analyses to avoid hitting API rate limits.
         // We don't need to wait after the very last clause.
         if (i < totalClauses - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(resolve => setTimeout(resolve, 250));
         }
     }
 
@@ -196,11 +220,24 @@ The blueprint's modular checklist for a standard Service & Deliverables contract
 Analyze the provided list of tags and identify which key components from the checklist appear to be missing. For each potentially missing component, provide a brief, high-level explanation of the risk associated with its absence. Structure your response as a markdown-formatted string. If no significant components are missing, state that the contract appears to be structurally comprehensive.`;
 
     try {
-        const response = await generateContentWithRetry({
-            model: "gemini-2.5-flash",
-            contents: prompt,
+        const response = await chatCompletionWithRetry({
+            model: MODEL,
+            messages: [
+                {
+                    role: 'system',
+                    content: 'You are a helpful legal AI assistant. Your response should be in markdown format.'
+                },
+                {
+                    role: 'user',
+                    content: prompt
+                }
+            ],
         });
-        return response.text;
+        const content = response.choices[0].message.content;
+        if (!content) {
+            throw new Error("API returned no content for missing clause report.");
+        }
+        return content;
     } catch (error) {
         console.error("Error generating missing clause report after multiple retries:", error);
         throw new Error("Failed to generate the missing clauses report. The AI model may be unavailable.");

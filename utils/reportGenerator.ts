@@ -28,6 +28,10 @@ function generateMarkdownReport(results: AnalysisResult[]): string {
 
         md += `### Recommendations & Categorization\n\n`;
         md += `**Negotiation Recommendation:**\n> ${result.negotiationRecommendation}\n\n`;
+        if (result.suggestedRedline) {
+            md += `**Suggested Redline:**\n`;
+            md += `\`\`\`\n${result.suggestedRedline}\n\`\`\`\n\n`;
+        }
         md += `**Risk Categories:** ${result.riskCategories.join(', ')}\n\n`;
         md += '---\n\n';
     });

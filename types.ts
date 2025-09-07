@@ -14,4 +14,6 @@ export interface AnalysisResult {
   riskScore: RiskLevel;
   riskCategories: RiskCategory[];
   negotiationRecommendation: string;
+  aiInvestigatoryQuestion: string;
+  suggestedRedline: string;
 }
